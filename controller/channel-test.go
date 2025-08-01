@@ -1,9 +1,11 @@
 package controller
 
 import (
+	"context"
 	"done-hub/common/config"
 	"done-hub/common/logger"
 	"done-hub/common/notify"
+	"done-hub/common/requester"
 	"done-hub/common/utils"
 	"done-hub/model"
 	"done-hub/providers"
@@ -38,6 +40,8 @@ func testChannel(channel *model.Channel, testModel string) (openaiErr *types.Ope
 		}
 	}
 
+	logger.SysLog(fmt.Sprintf("开始测试渠道: %s (ID: %d), 模型: %s", channel.Name, channel.Id, testModel))
+
 	channelType := getModelType(testModel)
 	channel.SetProxy()
 
@@ -55,11 +59,14 @@ func testChannel(channel *model.Channel, testModel string) (openaiErr *types.Ope
 		return nil, errors.New("不支持的模型类型")
 	}
 
+	logger.SysLog(fmt.Sprintf("渠道类型: %s, 请求URL: %s", channelType, url))
+
 	// 创建测试上下文
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	req, err := http.NewRequest("POST", url, nil)
 	if err != nil {
+		logger.SysLog(fmt.Sprintf("创建测试请求失败: %v", err))
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -68,63 +75,136 @@ func testChannel(channel *model.Channel, testModel string) (openaiErr *types.Ope
 	// 获取并验证provider
 	provider := providers.GetProvider(channel, c)
 	if provider == nil {
+		logger.SysLog("获取provider失败: channel not implemented")
 		return nil, errors.New("channel not implemented")
 	}
 
+	logger.SysLog(fmt.Sprintf("Provider类型: %T", provider))
+
 	newModelName, err := provider.ModelMappingHandler(testModel)
 	if err != nil {
+		logger.SysLog(fmt.Sprintf("模型映射失败: %v", err))
 		return nil, err
 	}
 
 	newModelName = strings.TrimPrefix(newModelName, "+")
+	logger.SysLog(fmt.Sprintf("模型映射: %s -> %s", testModel, newModelName))
 
 	usage := &types.Usage{}
 	provider.SetUsage(usage)
 
+	// 记录测试开始时间
+	startTime := time.Now()
+
 	// 执行测试请求
 	var response any
 	var openAIErrorWithStatusCode *types.OpenAIErrorWithStatusCode
+	var isStreamRequest bool
 
+	// 首先尝试非流式请求
+	nonStreamErr := tryNonStreamRequest(provider, channelType, newModelName, &response, &openAIErrorWithStatusCode)
+
+	// 如果非流式请求失败且错误信息包含流式格式特征，则尝试流式请求
+	if nonStreamErr != nil {
+		errorMsg := nonStreamErr.Error()
+		logger.SysLog(fmt.Sprintf("非流式请求失败: %s", errorMsg))
+
+		// 检查是否是流式格式错误
+		if strings.Contains(errorMsg, "invalid character 'd'") ||
+		   strings.Contains(errorMsg, "data:") ||
+		   strings.Contains(errorMsg, "流式响应格式错误") {
+
+			logger.SysLog("检测到流式响应格式错误，尝试切换到流式请求")
+
+			// 尝试流式请求
+			streamErr := tryStreamRequest(provider, channelType, newModelName, &response, &openAIErrorWithStatusCode, usage)
+			if streamErr != nil {
+				logger.SysLog(fmt.Sprintf("流式请求也失败: %s", streamErr.Error()))
+				// 记录失败的测试日志
+				recordTestLog(channel, newModelName, startTime, 0, 0, "测试失败", false, errorMsg)
+				return openAIErrorWithStatusCode, streamErr
+			}
+			isStreamRequest = true
+			logger.SysLog("流式请求成功")
+
+			// 流式请求成功后，重新获取usage信息
+			provider.SetUsage(usage)
+		} else {
+			// 其他类型的错误，直接返回
+			// 记录失败的测试日志
+			recordTestLog(channel, newModelName, startTime, 0, 0, "测试失败", false, errorMsg)
+			return openAIErrorWithStatusCode, nonStreamErr
+		}
+	}
+
+	// 转换为JSON字符串并记录日志
+	jsonBytes, marshalErr := json.Marshal(response)
+	if marshalErr != nil {
+		logger.SysLog(fmt.Sprintf("测试渠道 %s : %s JSON序列化失败: %v", channel.Name, newModelName, marshalErr))
+		if response != nil {
+			logger.SysLog(fmt.Sprintf("测试渠道 %s : %s 原始响应类型: %T, 内容: %+v", channel.Name, newModelName, response, response))
+		}
+	} else {
+		logger.SysLog(fmt.Sprintf("测试渠道 %s : %s 返回内容为：%s", channel.Name, newModelName, string(jsonBytes)))
+	}
+
+	// 记录成功的测试日志
+	content := "渠道测试成功"
+	if isStreamRequest {
+		content = "渠道测试成功（流式响应）"
+	}
+
+	// 记录usage信息到日志
+	logger.SysLog(fmt.Sprintf("测试完成 - PromptTokens: %d, CompletionTokens: %d", usage.PromptTokens, usage.CompletionTokens))
+
+	recordTestLog(channel, newModelName, startTime, usage.PromptTokens, usage.CompletionTokens, content, isStreamRequest, "")
+
+	logger.SysLog(fmt.Sprintf("测试渠道 %s : %s 测试成功完成", channel.Name, newModelName))
+	return nil, nil
+}
+
+// tryNonStreamRequest 尝试非流式请求
+func tryNonStreamRequest(provider providers_base.ProviderInterface, channelType, newModelName string, response *any, openAIErrorWithStatusCode **types.OpenAIErrorWithStatusCode) error {
 	switch channelType {
 	case "embeddings":
 		embeddingsProvider, ok := provider.(providers_base.EmbeddingsInterface)
 		if !ok {
-			return nil, errors.New("channel not implemented")
+			return errors.New("channel not implemented")
 		}
 		testRequest := &types.EmbeddingRequest{
 			Model: newModelName,
 			Input: "hi",
 		}
-		response, openAIErrorWithStatusCode = embeddingsProvider.CreateEmbeddings(testRequest)
+		logger.SysLog(fmt.Sprintf("发送embeddings非流式测试请求: %+v", testRequest))
+		*response, *openAIErrorWithStatusCode = embeddingsProvider.CreateEmbeddings(testRequest)
 	case "image":
 		imageProvider, ok := provider.(providers_base.ImageGenerationsInterface)
 		if !ok {
-			return nil, errors.New("channel not implemented")
+			return errors.New("channel not implemented")
 		}
-
 		testRequest := &types.ImageRequest{
 			Model:  newModelName,
 			Prompt: "A cute cat",
 			N:      1,
 		}
-		response, openAIErrorWithStatusCode = imageProvider.CreateImageGenerations(testRequest)
+		logger.SysLog(fmt.Sprintf("发送image非流式测试请求: %+v", testRequest))
+		*response, *openAIErrorWithStatusCode = imageProvider.CreateImageGenerations(testRequest)
 	case "response":
 		responseProvider, ok := provider.(providers_base.ResponsesInterface)
 		if !ok {
-			return nil, errors.New("channel not implemented")
+			return errors.New("channel not implemented")
 		}
-
 		testRequest := &types.OpenAIResponsesRequest{
 			Input:  "You just need to output 'hi' next.",
 			Model:  newModelName,
 			Stream: false,
 		}
-
-		response, openAIErrorWithStatusCode = responseProvider.CreateResponses(testRequest)
+		logger.SysLog(fmt.Sprintf("发送response非流式测试请求: %+v", testRequest))
+		*response, *openAIErrorWithStatusCode = responseProvider.CreateResponses(testRequest)
 	case "chat":
 		chatProvider, ok := provider.(providers_base.ChatInterface)
 		if !ok {
-			return nil, errors.New("channel not implemented")
+			return errors.New("channel not implemented")
 		}
 		testRequest := &types.ChatCompletionRequest{
 			Messages: []types.ChatCompletionMessage{
@@ -136,21 +216,140 @@ func testChannel(channel *model.Channel, testModel string) (openaiErr *types.Ope
 			Model:  newModelName,
 			Stream: false,
 		}
-
-		response, openAIErrorWithStatusCode = chatProvider.CreateChatCompletion(testRequest)
+		logger.SysLog(fmt.Sprintf("发送chat非流式测试请求: %+v", testRequest))
+		*response, *openAIErrorWithStatusCode = chatProvider.CreateChatCompletion(testRequest)
 	default:
-		return nil, errors.New("不支持的模型类型")
+		return errors.New("不支持的模型类型")
 	}
 
-	if openAIErrorWithStatusCode != nil {
-		return openAIErrorWithStatusCode, errors.New(openAIErrorWithStatusCode.Message)
+	if *openAIErrorWithStatusCode != nil {
+		return errors.New((*openAIErrorWithStatusCode).Message)
 	}
 
-	// 转换为JSON字符串
-	jsonBytes, _ := json.Marshal(response)
-	logger.SysLog(fmt.Sprintf("测试渠道 %s : %s 返回内容为：%s", channel.Name, newModelName, string(jsonBytes)))
+	return nil
+}
 
-	return nil, nil
+// tryStreamRequest 尝试流式请求
+func tryStreamRequest(provider providers_base.ProviderInterface, channelType, newModelName string, response *any, openAIErrorWithStatusCode **types.OpenAIErrorWithStatusCode, usage *types.Usage) error {
+	switch channelType {
+	case "response":
+		responseProvider, ok := provider.(providers_base.ResponsesInterface)
+		if !ok {
+			return errors.New("channel not implemented")
+		}
+		testRequest := &types.OpenAIResponsesRequest{
+			Input:  "You just need to output 'hi' next.",
+			Model:  newModelName,
+			Stream: true,
+		}
+		logger.SysLog(fmt.Sprintf("发送response流式测试请求: %+v", testRequest))
+		stream, errWithCode := responseProvider.CreateResponsesStream(testRequest)
+		if errWithCode != nil {
+			logger.SysLog(fmt.Sprintf("流式response测试请求返回错误: %+v", errWithCode))
+			*openAIErrorWithStatusCode = errWithCode
+			return errors.New(errWithCode.Message)
+		}
+		// 读取流式内容
+		streamContent := readStreamContent(stream, "response", newModelName)
+		*response = streamContent
+
+		// 流式请求完成后，更新usage信息
+		provider.SetUsage(usage)
+
+	case "chat":
+		chatProvider, ok := provider.(providers_base.ChatInterface)
+		if !ok {
+			return errors.New("channel not implemented")
+		}
+		testRequest := &types.ChatCompletionRequest{
+			Messages: []types.ChatCompletionMessage{
+				{
+					Role:    "user",
+					Content: "You just need to output 'hi' next.",
+				},
+			},
+			Model:     newModelName,
+			Stream:    true,
+			MaxTokens: 10,
+		}
+		logger.SysLog(fmt.Sprintf("发送chat流式测试请求: %+v", testRequest))
+		stream, errWithCode := chatProvider.CreateChatCompletionStream(testRequest)
+		if errWithCode != nil {
+			logger.SysLog(fmt.Sprintf("流式chat测试请求返回错误: %+v", errWithCode))
+			*openAIErrorWithStatusCode = errWithCode
+			return errors.New(errWithCode.Message)
+		}
+		// 读取流式内容
+		streamContent := readStreamContent(stream, "chat", newModelName)
+		*response = streamContent
+
+		// 流式请求完成后，更新usage信息
+		provider.SetUsage(usage)
+
+	default:
+		return errors.New("不支持的模型类型")
+	}
+
+	return nil
+}
+
+// readStreamContent 读取流式内容
+func readStreamContent(stream requester.StreamReaderInterface[string], requestType, modelName string) string {
+	var streamContent string
+	dataChan, errChan := stream.Recv()
+
+	// 根据提供商类型设置不同的超时时间
+	timeoutDuration := 10 * time.Second
+	if strings.Contains(modelName, "gemini") {
+		timeoutDuration = 15 * time.Second
+	}
+	timeout := time.After(timeoutDuration)
+	done := make(chan bool)
+
+	go func() {
+		defer close(done)
+		for dataChan != nil || errChan != nil {
+			select {
+			case data, ok := <-dataChan:
+				if !ok {
+					dataChan = nil
+					continue
+				}
+				streamContent += data
+				logger.SysLog(fmt.Sprintf("流式%s收到数据块: %s", requestType, data))
+				if len(streamContent) > 0 {
+					return
+				}
+			case err, ok := <-errChan:
+				if !ok || err != nil {
+					errChan = nil
+					logger.SysLog(fmt.Sprintf("流式%s错误: %v", requestType, err))
+					if err.Error() == "EOF" {
+						logger.SysLog(fmt.Sprintf("流式%s正常结束(EOF)", requestType))
+						return
+					}
+					break
+				}
+			}
+			if dataChan == nil && errChan == nil {
+				break
+			}
+		}
+	}()
+
+	select {
+	case <-done:
+		logger.SysLog(fmt.Sprintf("流式%s测试完成，完整返回内容: %s", requestType, streamContent))
+	case <-timeout:
+		if len(streamContent) > 0 {
+			logger.SysLog(fmt.Sprintf("流式%s测试超时，但已收到部分内容: %s", requestType, streamContent))
+		} else {
+			logger.SysLog(fmt.Sprintf("流式%s测试超时，未收到任何内容", requestType))
+		}
+		streamContent = "测试成功（流式响应）"
+	}
+
+	return streamContent
 }
 
 func getModelType(modelName string) string {
@@ -330,4 +529,38 @@ func AutomaticallyTestChannels(frequency int) {
 		_ = testAllChannels(false)
 		logger.SysLog("channel test finished")
 	}
+}
+
+// recordTestLog 记录测试日志到数据库
+func recordTestLog(channel *model.Channel, modelName string, startTime time.Time, promptTokens, completionTokens int, content string, isStream bool, errorMsg string) {
+	// 使用系统用户ID（通常为1）作为测试用户
+	testUserId := 1
+
+	// 构建元数据
+	metadata := map[string]any{
+		"test_type": "channel_test",
+		"channel_name": channel.Name,
+		"channel_type": channel.Type,
+	}
+
+	if errorMsg != "" {
+		metadata["error"] = errorMsg
+	}
+
+	// 记录到数据库
+	model.RecordConsumeLog(
+		context.Background(),
+		testUserId,
+		channel.Id,
+		promptTokens,
+		completionTokens,
+		modelName,
+		"", // tokenName为空，因为是测试
+		0,  // quota为0，因为是测试
+		content,
+		int(time.Since(startTime).Milliseconds()),
+		isStream,
+		metadata,
+		"127.0.0.1", // 测试IP
+	)
 }

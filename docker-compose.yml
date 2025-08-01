@@ -10,8 +10,8 @@ services:
     volumes:
       - ./data:/data
     environment:
-      - SQL_DSN=oneapi:123456@tcp(db:3306)/done-hub # 修改此行，或注释掉以使用 SQLite 作为数据库
-      - REDIS_CONN_STRING=redis://redis # redis
+      - SQL_DSN=${SQL_DSN} # 使用.env文件中的SQL_DSN变量
+      # - REDIS_CONN_STRING=redis://:jhkdjhkjdhsIUTYURTU_CQPQ82@10.0.0.83:6379 # redis (请将 your_password 替换为实际的 Redis 密码)
       - SESSION_SECRET=random_string # 修改为随机字符串
       - USER_TOKEN_SECRET=random_string # 修改为随机字符串,32位以上
       - TZ=Asia/Shanghai
@@ -19,9 +19,6 @@ services:
     #      - NODE_TYPE=slave  # 多机部署时从节点取消注释该行
     #      - SYNC_FREQUENCY=60  # 需要定期从数据库加载数据时取消注释该行
     #      - FRONTEND_BASE_URL=https://openai.justsong.cn  # 多机部署时从节点取消注释该行
-    depends_on:
-      - redis
-      - db
     healthcheck:
       test:
         [
@@ -31,23 +28,3 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-  redis:
-    image: redis:latest
-    container_name: redis
-    restart: always
-
-  db:
-    image: mysql:8.2.0
-    restart: always
-    container_name: mysql
-    volumes:
-      - ./data/mysql:/var/lib/mysql # 挂载目录，持久化存储
-    ports:
-      - "3306:3306"
-    environment:
-      TZ: Asia/Shanghai # 设置时区
-      MYSQL_ROOT_PASSWORD: "DoneHub@justsong" # 设置 root 用户的密码
-      MYSQL_USER: oneapi # 创建专用用户
-      MYSQL_PASSWORD: "123456" # 设置专用用户密码
-      MYSQL_DATABASE: done-hub # 自动创建数据库

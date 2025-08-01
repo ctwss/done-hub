@@ -29,6 +29,7 @@ import (
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
+	"github.com/joho/godotenv"
 )
 
 //go:embed web/build
@@ -38,6 +39,8 @@ var buildFS embed.FS
 var indexPage []byte
 
 func main() {
+	// 优先加载 .env 文件（如果存在）
+	_ = godotenv.Load()
 	cli.InitCli()
 	config.InitConf()
 	if viper.GetString("log_level") == "debug" {
