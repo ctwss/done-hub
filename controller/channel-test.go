@@ -250,11 +250,20 @@ func tryStreamRequest(provider providers_base.ProviderInterface, channelType, ne
 			return errors.New(errWithCode.Message)
 		}
 		// 读取流式内容
-		streamContent := readStreamContent(stream, "response", newModelName)
+		streamContent, streamUsage := readStreamContent(stream, "response", newModelName)
 		*response = streamContent
 
-		// 流式请求完成后，更新usage信息
-		provider.SetUsage(usage)
+		// 如果流式响应返回了usage信息，使用它
+		if streamUsage != nil {
+			usage.PromptTokens = streamUsage.PromptTokens
+			usage.CompletionTokens = streamUsage.CompletionTokens
+			usage.TotalTokens = streamUsage.TotalTokens
+		}
+
+		// 流式请求完成后，直接设置固定的usage信息
+		usage.PromptTokens = 1
+		usage.CompletionTokens = 1
+		usage.TotalTokens = 2
 
 	case "chat":
 		chatProvider, ok := provider.(providers_base.ChatInterface)
@@ -280,11 +289,20 @@ func tryStreamRequest(provider providers_base.ProviderInterface, channelType, ne
 			return errors.New(errWithCode.Message)
 		}
 		// 读取流式内容
-		streamContent := readStreamContent(stream, "chat", newModelName)
+		streamContent, streamUsage := readStreamContent(stream, "chat", newModelName)
 		*response = streamContent
 
-		// 流式请求完成后，更新usage信息
-		provider.SetUsage(usage)
+		// 如果流式响应返回了usage信息，使用它
+		if streamUsage != nil {
+			usage.PromptTokens = streamUsage.PromptTokens
+			usage.CompletionTokens = streamUsage.CompletionTokens
+			usage.TotalTokens = streamUsage.TotalTokens
+		}
+
+		// 流式请求完成后，直接设置固定的usage信息
+		usage.PromptTokens = 1
+		usage.CompletionTokens = 1
+		usage.TotalTokens = 2
 
 	default:
 		return errors.New("不支持的模型类型")
@@ -294,8 +312,26 @@ func tryStreamRequest(provider providers_base.ProviderInterface, channelType, ne
 }
 
 // readStreamContent 读取流式内容
-func readStreamContent(stream requester.StreamReaderInterface[string], requestType, modelName string) string {
+func readStreamContent(stream requester.StreamReaderInterface[string], requestType, modelName string) (string, *types.Usage) {
 	var streamContent string
+	var streamUsage *types.Usage
+
+	// 尝试从stream中获取usage信息
+	if streamWithUsage, ok := stream.(interface{ GetUsage() *types.Usage }); ok {
+		streamUsage = streamWithUsage.GetUsage()
+	}
+
+	// 如果stream没有直接提供usage，尝试从stream的handler中获取
+	if streamUsage == nil {
+		// 检查stream是否包含handler
+		if streamWithHandler, ok := stream.(interface{ GetHandler() interface{} }); ok {
+			handler := streamWithHandler.GetHandler()
+			if handlerWithUsage, ok := handler.(interface{ GetUsage() *types.Usage }); ok {
+				streamUsage = handlerWithUsage.GetUsage()
+			}
+		}
+	}
+
 	dataChan, errChan := stream.Recv()
 
 	// 根据提供商类型设置不同的超时时间
@@ -349,7 +385,7 @@ func readStreamContent(stream requester.StreamReaderInterface[string], requestTy
 		streamContent = "测试成功（流式响应）"
 	}
 
-	return streamContent
+	return streamContent, streamUsage
 }
 
 func getModelType(modelName string) string {
@@ -547,6 +583,12 @@ func recordTestLog(channel *model.Channel, modelName string, startTime time.Time
 		metadata["error"] = errorMsg
 	}
 
+	// 为流式请求设置固定的token_name
+	tokenName := ""
+	if isStream {
+		tokenName = "test"
+	}
+
 	// 记录到数据库
 	model.RecordConsumeLog(
 		context.Background(),
@@ -555,7 +597,7 @@ func recordTestLog(channel *model.Channel, modelName string, startTime time.Time
 		promptTokens,
 		completionTokens,
 		modelName,
-		"", // tokenName为空，因为是测试
+		tokenName, // 流式请求使用"test"，非流式请求为空
 		0,  // quota为0，因为是测试
 		content,
 		int(time.Since(startTime).Milliseconds()),
