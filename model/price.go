@@ -300,6 +300,8 @@ func GetDefaultPrice() []*Price {
 		// ￥0.1 / 1k tokens
 		"glm-4":  {[]float64{7.143, 7.143}, config.ChannelTypeZhipu},
 		"glm-4v": {[]float64{7.143, 7.143}, config.ChannelTypeZhipu},
+		// ￥0.005 / 1k tokens (Claude 兼容模型)
+		"glm-4.5-air": {[]float64{0.3572, 0.3572}, config.ChannelTypeZhipu},
 		// ￥0.0005 / 1k tokens
 		"embedding-2": {[]float64{0.0357, 0.0357}, config.ChannelTypeZhipu},
 		// ￥0.25 / 1张图片

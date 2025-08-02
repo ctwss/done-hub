@@ -171,7 +171,7 @@ const typeConfig = {
   },
   16: {
     input: {
-      models: ['glm-3-turbo', 'glm-4', 'glm-4v', 'embedding-2', 'cogview-3'],
+      models: ['glm-3-turbo', 'glm-4', 'glm-4v', 'glm-4.5-air', 'embedding-2', 'cogview-3'],
       test_model: 'glm-3-turbo'
     },
     modelGroup: 'Zhipu'
