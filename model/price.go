@@ -293,6 +293,7 @@ func GetDefaultPrice() []*Price {
 		"gemini-1.5-pro-latest":   {[]float64{1.75, 5.25}, config.ChannelTypeGemini},
 		"gemini-1.5-flash":        {[]float64{0.175, 0.265}, config.ChannelTypeGemini},
 		"gemini-1.5-flash-latest": {[]float64{0.175, 0.265}, config.ChannelTypeGemini},
+		"gemini-2.0-flash-exp":    {[]float64{0.175, 0.265}, config.ChannelTypeGemini},
 		"gemini-ultra":            {[]float64{1, 1}, config.ChannelTypeGemini},
 
 		// ￥0.005 / 1k tokens

@@ -231,7 +231,7 @@ const typeConfig = {
       provider_models_list: '从Gemini获取模型列表'
     },
     input: {
-      models: ['gemini-pro', 'gemini-pro-vision', 'gemini-1.0-pro', 'gemini-1.5-pro'],
+      models: ['gemini-pro', 'gemini-pro-vision', 'gemini-1.0-pro', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash-exp'],
       test_model: 'gemini-pro'
     },
     prompt: {
