@@ -13,7 +13,7 @@ const (
 const (
 	ContentTypeText             = "text"
 	ContentTypeImage            = "image"
-	ContentTypeToolUes          = "tool_use"
+	ContentTypeToolUse          = "tool_use"
 	ContentTypeToolResult       = "tool_result"
 	ContentTypeThinking         = "thinking"
 	ContentTypeRedactedThinking = "redacted_thinking"

@@ -270,7 +270,7 @@ func convertMessageContent(msg *types.ChatCompletionMessage) (*Message, error) {
 				return nil, err
 			}
 			content = append(content, MessageContent{
-				Type:  ContentTypeToolUes,
+				Type:  ContentTypeToolUse,
 				Id:    toolCall.Id,
 				Name:  toolCall.Function.Name,
 				Input: inputParam,
@@ -343,7 +343,7 @@ func ConvertToChatOpenai(provider base.ProviderInterface, response *ClaudeRespon
 
 	for _, content := range response.Content {
 		switch content.Type {
-		case ContentTypeToolUes:
+		case ContentTypeToolUse:
 			if len(choices) == 0 {
 				choice := types.ChatCompletionChoice{
 					Index: 0,
@@ -494,7 +494,7 @@ func (h *ClaudeStreamHandler) convertToOpenaiStream(claudeResponse *ClaudeStream
 
 	var toolCalls []*types.ChatCompletionToolCalls
 
-	if claudeResponse.ContentBlock.Type == ContentTypeToolUes {
+	if claudeResponse.ContentBlock.Type == ContentTypeToolUse {
 		toolCalls = append(toolCalls, &types.ChatCompletionToolCalls{
 			Id:   claudeResponse.ContentBlock.Id,
 			Type: types.ChatMessageRoleFunction,
@@ -525,7 +525,7 @@ func (h *ClaudeStreamHandler) convertToOpenaiStream(claudeResponse *ClaudeStream
 		choice.Delta.ReasoningContent = claudeResponse.Delta.Thinking
 	}
 
-	if claudeResponse.ContentBlock.Type != ContentTypeToolUes && claudeResponse.Delta.Type != "input_json_delta" && h.StreamTolls != StreamTollsNone {
+	if claudeResponse.ContentBlock.Type != ContentTypeToolUse && claudeResponse.Delta.Type != "input_json_delta" && h.StreamTolls != StreamTollsNone {
 		if h.StreamTolls == StreamTollsUse {
 			toolCalls = append(toolCalls, &types.ChatCompletionToolCalls{
 				Type: types.ChatMessageRoleFunction,

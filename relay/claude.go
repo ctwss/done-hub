@@ -7,7 +7,9 @@ import (
 	"done-hub/common/logger"
 	"done-hub/common/requester"
 	"done-hub/common/utils"
+	"done-hub/providers/base"
 	"done-hub/providers/claude"
+	commonadapter "done-hub/providers/common"
 	"done-hub/providers/openai"
 	"done-hub/providers/vertexai"
 	"done-hub/relay/transformer"
@@ -24,7 +26,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var AllowChannelType = []int{config.ChannelTypeAnthropic, config.ChannelTypeVertexAI, config.ChannelTypeBedrock, config.ChannelTypeCustom, config.ChannelTypeZhipu, config.ChannelTypeGemini, config.ChannelTypeOpenAI}
+// AllowChannelType 空数组表示支持所有渠道类型
+// 通过接口检测来确定是否支持 Claude 协议
+var AllowChannelType = []int{}
 
 type relayClaudeOnly struct {
 	relayBase
@@ -90,12 +94,21 @@ func (r *relayClaudeOnly) send() (err *types.OpenAIErrorWithStatusCode, done boo
 		return r.sendVertexAIGeminiWithClaudeFormat()
 	}
 
+	// 首先检查是否直接实现了 Claude 接口
 	chatProvider, ok := r.provider.(claude.ClaudeChatInterface)
 	if !ok {
-		logger.SysError(fmt.Sprintf("[Claude Relay] Provider 不支持 Claude 接口，Provider 类型: %T", r.provider))
-		err = common.StringErrorWrapperLocal("channel not implemented", "channel_error", http.StatusServiceUnavailable)
-		done = true
-		return
+		// 如果没有直接实现 Claude 接口，检查是否实现了 ChatInterface
+		if baseChatProvider, ok := r.provider.(base.ChatInterface); ok {
+			// 使用通用适配器
+			adapter := commonadapter.NewClaudeAdapter(baseChatProvider)
+			chatProvider = adapter
+			logger.SysLog(fmt.Sprintf("[Claude Relay] 使用通用适配器为 Provider 类型 %T 提供 Claude 支持", r.provider))
+		} else {
+			logger.SysError(fmt.Sprintf("[Claude Relay] Provider 不支持 Claude 接口或 Chat 接口，Provider 类型: %T", r.provider))
+			err = common.StringErrorWrapperLocal("channel not implemented", "channel_error", http.StatusServiceUnavailable)
+			done = true
+			return
+		}
 	}
 
 	r.claudeRequest.Model = r.modelName
@@ -171,9 +184,13 @@ func (r *relayClaudeOnly) HandleStreamError(err *types.OpenAIErrorWithStatusCode
 
 	str, jsonErr := json.Marshal(response)
 	if jsonErr != nil {
+		logger.SysError("Failed to marshal error response: " + jsonErr.Error())
 		return
 	}
-	r.c.Writer.Write([]byte("event: error\ndata: " + string(str) + "\n\n"))
+	_, writeErr := r.c.Writer.Write([]byte("event: error\ndata: " + string(str) + "\n\n"))
+	if writeErr != nil {
+		logger.SysError("Failed to write error response: " + writeErr.Error())
+	}
 	r.c.Writer.Flush()
 }
 
@@ -612,7 +629,10 @@ func (r *relayClaudeOnly) convertOpenAIResponseToClaude(openaiResponse *types.Ch
 		for _, toolCall := range choice.Message.ToolCalls {
 			var input interface{}
 			if toolCall.Function.Arguments != "" {
-				json.Unmarshal([]byte(toolCall.Function.Arguments), &input)
+				if err := json.Unmarshal([]byte(toolCall.Function.Arguments), &input); err != nil {
+					logger.SysError("Failed to unmarshal tool arguments: " + err.Error())
+					input = map[string]interface{}{}
+				}
 			} else {
 				input = map[string]interface{}{}
 			}
@@ -1201,7 +1221,9 @@ func (r *relayClaudeOnly) processToolCallDelta(toolCall map[string]interface{}, 
 				trimmedArgs := strings.TrimSpace(currentToolCall["arguments"].(string))
 				if strings.HasPrefix(trimmedArgs, "{") && strings.HasSuffix(trimmedArgs, "}") {
 					var parsedParams interface{}
-					json.Unmarshal([]byte(trimmedArgs), &parsedParams)
+					if err := json.Unmarshal([]byte(trimmedArgs), &parsedParams); err != nil {
+						logger.SysError("Failed to validate tool arguments JSON: " + err.Error())
+					}
 				}
 			}
 
@@ -1356,8 +1378,12 @@ func (r *relayClaudeOnly) handleBackgroundTaskInSetRequest() error {
 
 		// 发送最简单的完成事件并立即结束
 		messageId := fmt.Sprintf("msg_bg_%d", utils.GetTimestamp())
-		r.c.Writer.Write([]byte(`data: {"type":"message_start","message":{"id":"` + messageId + `","type":"message","role":"assistant","content":[],"model":"` + r.modelName + `","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n"))
-		r.c.Writer.Write([]byte(`data: {"type":"message_stop"}` + "\n\n"))
+		if _, err := r.c.Writer.Write([]byte(`data: {"type":"message_start","message":{"id":"` + messageId + `","type":"message","role":"assistant","content":[],"model":"` + r.modelName + `","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}` + "\n\n")); err != nil {
+			logger.SysError("Failed to write message_start: " + err.Error())
+		}
+		if _, err := r.c.Writer.Write([]byte(`data: {"type":"message_stop"}` + "\n\n")); err != nil {
+			logger.SysError("Failed to write message_stop: " + err.Error())
+		}
 
 		if flusher, ok := r.c.Writer.(http.Flusher); ok {
 			flusher.Flush()
@@ -1545,12 +1571,15 @@ func (r *relayClaudeOnly) convertOpenAIStreamToClaudeWithTransformer(stream requ
 		line := scanner.Text()
 
 		// forward Claude format SSE events directly
-		fmt.Fprintf(r.c.Writer, "%s\n", line)
+		if _, err := fmt.Fprintf(r.c.Writer, "%s\n", line); err != nil {
+			logger.SysError("Failed to write stream line: " + err.Error())
+			break
+		}
 		flusher.Flush()
 	}
 
 	if err := scanner.Err(); err != nil {
-		// log scan error if needed
+		logger.SysError("Scanner error: " + err.Error())
 	}
 
 	return firstResponseTime
@@ -1607,7 +1636,9 @@ func (r *relayClaudeOnly) writeStreamResponse(response *http.Response) {
 
 	// 直接复制响应体
 	defer response.Body.Close()
-	io.Copy(r.c.Writer, response.Body)
+	if _, err := io.Copy(r.c.Writer, response.Body); err != nil {
+		logger.SysError("Failed to copy response body: " + err.Error())
+	}
 }
 
 // 注意：convertVertexAIStreamToClaude 方法已被移除

@@ -28,8 +28,8 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
-	"github.com/spf13/viper"
 	"github.com/joho/godotenv"
+	"github.com/spf13/viper"
 )
 
 //go:embed web/build

@@ -11,7 +11,7 @@ import (
 
 // Claude API 相关常量
 const (
-	ClaudeBaseURL = "https://open.bigmodel.cn/api/anthropic"
+	ClaudeBaseURL  = "https://open.bigmodel.cn/api/anthropic"
 	ClaudeMessages = "/v1/messages"
 )
 
@@ -64,7 +64,7 @@ func (p *ZhipuProvider) CreateClaudeChatStream(request *claude.ClaudeRequest) (r
 func (p *ZhipuProvider) getClaudeRequest(request *claude.ClaudeRequest) (*http.Request, *types.OpenAIErrorWithStatusCode) {
 	// 构建完整的 Claude API URL
 	fullRequestURL := fmt.Sprintf("%s%s", ClaudeBaseURL, ClaudeMessages)
-	
+
 	// 如果渠道配置了自定义 base_url，使用自定义的
 	if p.Channel.GetBaseURL() != "" {
 		fullRequestURL = fmt.Sprintf("%s%s", p.Channel.GetBaseURL(), ClaudeMessages)

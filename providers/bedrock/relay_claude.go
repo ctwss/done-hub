@@ -3,6 +3,7 @@ package bedrock
 import (
 	"done-hub/common"
 	"done-hub/common/config"
+	"done-hub/common/logger"
 	"done-hub/common/requester"
 	"done-hub/providers/bedrock/category"
 	"done-hub/providers/claude"
@@ -11,6 +12,20 @@ import (
 )
 
 func (p *BedrockProvider) CreateClaudeChat(request *claude.ClaudeRequest) (*claude.ClaudeResponse, *types.OpenAIErrorWithStatusCode) {
+	// 输入验证
+	if request == nil {
+		return nil, common.StringErrorWrapper("request cannot be nil", "invalid_request", http.StatusBadRequest)
+	}
+
+	if len(request.Messages) == 0 {
+		return nil, common.StringErrorWrapper("messages cannot be empty", "invalid_request", http.StatusBadRequest)
+	}
+
+	if request.MaxTokens <= 0 {
+		return nil, common.StringErrorWrapper("max_tokens must be positive", "invalid_request", http.StatusBadRequest)
+	}
+
+	logger.SysLog("Bedrock Claude: Processing Claude chat request")
 	req, errWithCode := p.getClaudeRequest(request)
 	if errWithCode != nil {
 		return nil, errWithCode
@@ -30,6 +45,20 @@ func (p *BedrockProvider) CreateClaudeChat(request *claude.ClaudeRequest) (*clau
 }
 
 func (p *BedrockProvider) CreateClaudeChatStream(request *claude.ClaudeRequest) (requester.StreamReaderInterface[string], *types.OpenAIErrorWithStatusCode) {
+	// 输入验证
+	if request == nil {
+		return nil, common.StringErrorWrapper("request cannot be nil", "invalid_request", http.StatusBadRequest)
+	}
+
+	if len(request.Messages) == 0 {
+		return nil, common.StringErrorWrapper("messages cannot be empty", "invalid_request", http.StatusBadRequest)
+	}
+
+	if request.MaxTokens <= 0 {
+		return nil, common.StringErrorWrapper("max_tokens must be positive", "invalid_request", http.StatusBadRequest)
+	}
+
+	logger.SysLog("Bedrock Claude: Processing Claude stream request")
 	req, errWithCode := p.getClaudeRequest(request)
 	if errWithCode != nil {
 		return nil, errWithCode

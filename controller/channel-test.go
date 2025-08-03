@@ -111,8 +111,8 @@ func testChannel(channel *model.Channel, testModel string) (openaiErr *types.Ope
 
 		// 检查是否是流式格式错误
 		if strings.Contains(errorMsg, "invalid character 'd'") ||
-		   strings.Contains(errorMsg, "data:") ||
-		   strings.Contains(errorMsg, "流式响应格式错误") {
+			strings.Contains(errorMsg, "data:") ||
+			strings.Contains(errorMsg, "流式响应格式错误") {
 
 			logger.SysLog("检测到流式响应格式错误，尝试切换到流式请求")
 
@@ -574,7 +574,7 @@ func recordTestLog(channel *model.Channel, modelName string, startTime time.Time
 
 	// 构建元数据
 	metadata := map[string]any{
-		"test_type": "channel_test",
+		"test_type":    "channel_test",
 		"channel_name": channel.Name,
 		"channel_type": channel.Type,
 	}
@@ -598,7 +598,7 @@ func recordTestLog(channel *model.Channel, modelName string, startTime time.Time
 		completionTokens,
 		modelName,
 		tokenName, // 流式请求使用"test"，非流式请求为空
-		0,  // quota为0，因为是测试
+		0,         // quota为0，因为是测试
 		content,
 		int(time.Since(startTime).Milliseconds()),
 		isStream,

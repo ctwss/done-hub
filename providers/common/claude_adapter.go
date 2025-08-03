@@ -1,38 +1,106 @@
-package openai
+package common
 
 import (
 	"done-hub/common"
-	"done-hub/common/config"
 	"done-hub/common/logger"
 	"done-hub/common/requester"
+	"done-hub/model"
+	"done-hub/providers/base"
 	"done-hub/providers/claude"
 	"done-hub/types"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
+
+	"github.com/gin-gonic/gin"
 )
 
+// ClaudeAdapter 通用 Claude 适配器，为任何实现了 ChatInterface 的 provider 提供 Claude 支持
+type ClaudeAdapter struct {
+	ChatProvider base.ChatInterface
+}
+
+// 实现 base.ProviderInterface 的方法，直接委托给底层 ChatProvider
+
+func (a *ClaudeAdapter) GetRequestHeaders() map[string]string {
+	return a.ChatProvider.GetRequestHeaders()
+}
+
+func (a *ClaudeAdapter) GetUsage() *types.Usage {
+	return a.ChatProvider.GetUsage()
+}
+
+func (a *ClaudeAdapter) SetUsage(usage *types.Usage) {
+	a.ChatProvider.SetUsage(usage)
+}
+
+func (a *ClaudeAdapter) SetContext(c *gin.Context) {
+	a.ChatProvider.SetContext(c)
+}
+
+func (a *ClaudeAdapter) SetOriginalModel(modelName string) {
+	a.ChatProvider.SetOriginalModel(modelName)
+}
+
+func (a *ClaudeAdapter) GetOriginalModel() string {
+	return a.ChatProvider.GetOriginalModel()
+}
+
+func (a *ClaudeAdapter) GetChannel() *model.Channel {
+	return a.ChatProvider.GetChannel()
+}
+
+func (a *ClaudeAdapter) ModelMappingHandler(modelName string) (string, error) {
+	return a.ChatProvider.ModelMappingHandler(modelName)
+}
+
+func (a *ClaudeAdapter) GetRequester() *requester.HTTPRequester {
+	return a.ChatProvider.GetRequester()
+}
+
+func (a *ClaudeAdapter) SetOtherArg(otherArg string) {
+	a.ChatProvider.SetOtherArg(otherArg)
+}
+
+func (a *ClaudeAdapter) GetOtherArg() string {
+	return a.ChatProvider.GetOtherArg()
+}
+
+func (a *ClaudeAdapter) CustomParameterHandler() (map[string]interface{}, error) {
+	return a.ChatProvider.CustomParameterHandler()
+}
+
+func (a *ClaudeAdapter) GetSupportedResponse() bool {
+	return a.ChatProvider.GetSupportedResponse()
+}
+
+// NewClaudeAdapter 创建新的 Claude 适配器
+func NewClaudeAdapter(chatProvider base.ChatInterface) *ClaudeAdapter {
+	return &ClaudeAdapter{
+		ChatProvider: chatProvider,
+	}
+}
+
 // CreateClaudeChat 实现 Claude 聊天接口
-func (p *OpenAIProvider) CreateClaudeChat(request *claude.ClaudeRequest) (*claude.ClaudeResponse, *types.OpenAIErrorWithStatusCode) {
+func (a *ClaudeAdapter) CreateClaudeChat(request *claude.ClaudeRequest) (*claude.ClaudeResponse, *types.OpenAIErrorWithStatusCode) {
 	// 将 Claude 请求转换为 OpenAI 格式
-	openaiRequest, errWithCode := p.convertClaudeToOpenAI(request)
+	openaiRequest, errWithCode := a.convertClaudeToOpenAI(request)
 	if errWithCode != nil {
 		return nil, errWithCode
 	}
 
-	// 使用 OpenAI provider 处理请求
-	openaiResponse, errWithCode := p.CreateChatCompletion(openaiRequest)
+	// 使用底层 ChatProvider 处理请求
+	openaiResponse, errWithCode := a.ChatProvider.CreateChatCompletion(openaiRequest)
 	if errWithCode != nil {
 		return nil, errWithCode
 	}
 
 	// 将 OpenAI 响应转换为 Claude 格式
-	claudeResponse := p.convertOpenAIToClaude(openaiResponse, request)
+	claudeResponse := a.convertOpenAIToClaude(openaiResponse, request)
 
 	// 设置用量信息
-	usage := p.GetUsage()
+	usage := a.ChatProvider.GetUsage()
 	if openaiResponse.Usage != nil {
 		claude.ClaudeUsageToOpenaiUsage(&claudeResponse.Usage, usage)
 	}
@@ -41,9 +109,9 @@ func (p *OpenAIProvider) CreateClaudeChat(request *claude.ClaudeRequest) (*claud
 }
 
 // CreateClaudeChatStream 实现 Claude 流式聊天接口
-func (p *OpenAIProvider) CreateClaudeChatStream(request *claude.ClaudeRequest) (requester.StreamReaderInterface[string], *types.OpenAIErrorWithStatusCode) {
+func (a *ClaudeAdapter) CreateClaudeChatStream(request *claude.ClaudeRequest) (requester.StreamReaderInterface[string], *types.OpenAIErrorWithStatusCode) {
 	// 将 Claude 请求转换为 OpenAI 格式
-	openaiRequest, errWithCode := p.convertClaudeToOpenAI(request)
+	openaiRequest, errWithCode := a.convertClaudeToOpenAI(request)
 	if errWithCode != nil {
 		return nil, errWithCode
 	}
@@ -51,30 +119,24 @@ func (p *OpenAIProvider) CreateClaudeChatStream(request *claude.ClaudeRequest) (
 	// 设置流式请求
 	openaiRequest.Stream = true
 
-	// 使用 OpenAI provider 处理流式请求
-	req, errWithCode := p.GetRequestTextBody(config.RelayModeChatCompletions, openaiRequest.Model, openaiRequest)
-	if errWithCode != nil {
-		return nil, errWithCode
-	}
-	defer req.Body.Close()
-
-	resp, errWithCode := p.Requester.SendRequestRaw(req)
+	// 使用底层 ChatProvider 处理流式请求
+	streamReader, errWithCode := a.ChatProvider.CreateChatCompletionStream(openaiRequest)
 	if errWithCode != nil {
 		return nil, errWithCode
 	}
 
-	// 创建 Claude 格式的流处理器
-	chatHandler := &OpenAIClaudeStreamHandler{
-		Usage:     p.Usage,
-		ModelName: request.Model,
-		Prefix:    `data: {"type"`,
+	// 创建 Claude 格式的流处理器包装器
+	claudeStreamWrapper := &ClaudeStreamWrapper{
+		OriginalStream: streamReader,
+		Usage:          a.ChatProvider.GetUsage(),
+		ModelName:      request.Model,
 	}
 
-	return requester.RequestStream[string](p.Requester, resp, chatHandler.handlerStream)
+	return claudeStreamWrapper, nil
 }
 
 // convertClaudeToOpenAI 将 Claude 请求转换为 OpenAI 格式
-func (p *OpenAIProvider) convertClaudeToOpenAI(request *claude.ClaudeRequest) (*types.ChatCompletionRequest, *types.OpenAIErrorWithStatusCode) {
+func (a *ClaudeAdapter) convertClaudeToOpenAI(request *claude.ClaudeRequest) (*types.ChatCompletionRequest, *types.OpenAIErrorWithStatusCode) {
 	// 输入验证
 	if request == nil {
 		return nil, common.StringErrorWrapper("request cannot be nil", "invalid_request", http.StatusBadRequest)
@@ -174,7 +236,6 @@ func (p *OpenAIProvider) convertClaudeToOpenAI(request *claude.ClaudeRequest) (*
 				if len(textParts) > 0 {
 					openaiMsg.Content = strings.Join(textParts, "\n")
 				}
-				// toolResults 已经直接添加到 openaiRequest.Messages 中了
 			default:
 				// 尝试转换为字符串
 				if contentBytes, err := json.Marshal(content); err == nil {
@@ -224,7 +285,7 @@ func (p *OpenAIProvider) convertClaudeToOpenAI(request *claude.ClaudeRequest) (*
 }
 
 // convertOpenAIToClaude 将 OpenAI 响应转换为 Claude 格式
-func (p *OpenAIProvider) convertOpenAIToClaude(response *types.ChatCompletionResponse, request *claude.ClaudeRequest) *claude.ClaudeResponse {
+func (a *ClaudeAdapter) convertOpenAIToClaude(response *types.ChatCompletionResponse, request *claude.ClaudeRequest) *claude.ClaudeResponse {
 	content := make([]claude.ResContent, 0)
 
 	if len(response.Choices) > 0 {
@@ -298,46 +359,101 @@ func (p *OpenAIProvider) convertOpenAIToClaude(response *types.ChatCompletionRes
 	return claudeResponse
 }
 
-// OpenAIClaudeStreamHandler 处理 OpenAI 到 Claude 的流式响应转换
-type OpenAIClaudeStreamHandler struct {
-	Usage     *types.Usage
-	ModelName string
-	Prefix    string
+// ClaudeStreamWrapper 包装原始流，将 OpenAI 流式响应转换为 Claude 格式
+type ClaudeStreamWrapper struct {
+	OriginalStream requester.StreamReaderInterface[string]
+	Usage          *types.Usage
+	ModelName      string
+	dataChan       chan string
+	errChan        chan error
 }
 
-// handlerStream 处理流式响应转换
-func (h *OpenAIClaudeStreamHandler) handlerStream(rawLine *[]byte, dataChan chan string, errChan chan error) {
-	// 处理 OpenAI 流式响应并转换为 Claude 格式
-	if !strings.HasPrefix(string(*rawLine), "data: ") {
-		*rawLine = nil
-		return
+// Recv 接收并转换流式数据
+func (w *ClaudeStreamWrapper) Recv() (<-chan string, <-chan error) {
+	if w.dataChan == nil {
+		w.dataChan = make(chan string)
+		w.errChan = make(chan error)
+
+		// 启动转换协程
+		go w.processStream()
 	}
 
-	*rawLine = (*rawLine)[6:]
+	return w.dataChan, w.errChan
+}
 
-	if strings.HasPrefix(string(*rawLine), "[DONE]") {
-		errChan <- io.EOF
-		*rawLine = nil
-		return
-	}
+// Close 关闭流
+func (w *ClaudeStreamWrapper) Close() {
+	w.OriginalStream.Close()
+}
 
-	// 解析 OpenAI 流式响应
-	var openaiStreamResponse types.ChatCompletionStreamResponse
-	if err := json.Unmarshal(*rawLine, &openaiStreamResponse); err != nil {
-		errChan <- common.ErrorToOpenAIError(err)
-		return
-	}
+// processStream 处理流式数据转换
+func (w *ClaudeStreamWrapper) processStream() {
+	defer close(w.dataChan)
+	defer close(w.errChan)
 
-	// 转换为 Claude 流式格式
-	claudeStreamResponse := h.convertOpenAIStreamToClaude(&openaiStreamResponse)
-	if claudeStreamResponse != nil {
-		responseBody, _ := json.Marshal(claudeStreamResponse)
-		dataChan <- string(responseBody)
+	// 从原始流接收数据
+	dataChan, errChan := w.OriginalStream.Recv()
+
+	for {
+		select {
+		case data, ok := <-dataChan:
+			if !ok {
+				return // 数据通道已关闭
+			}
+			// 转换 OpenAI 流式响应为 Claude 格式
+			claudeData := w.convertOpenAIStreamToClaude(data)
+			if claudeData != "" {
+				w.dataChan <- claudeData
+			}
+		case err, ok := <-errChan:
+			if !ok {
+				return // 错误通道已关闭
+			}
+			w.errChan <- err
+			return
+		}
 	}
 }
 
 // convertOpenAIStreamToClaude 将 OpenAI 流式响应转换为 Claude 流式格式
-func (h *OpenAIClaudeStreamHandler) convertOpenAIStreamToClaude(response *types.ChatCompletionStreamResponse) interface{} {
+func (w *ClaudeStreamWrapper) convertOpenAIStreamToClaude(data string) string {
+	// 如果不是 data: 开头，直接返回
+	if !strings.HasPrefix(data, "data: ") {
+		return data
+	}
+
+	// 提取 JSON 部分
+	jsonData := strings.TrimPrefix(data, "data: ")
+	jsonData = strings.TrimSpace(jsonData)
+
+	// 处理 [DONE] 标记
+	if jsonData == "[DONE]" {
+		return data // 保持原样
+	}
+
+	// 解析 OpenAI 流式响应
+	var openaiStreamResponse types.ChatCompletionStreamResponse
+	if err := json.Unmarshal([]byte(jsonData), &openaiStreamResponse); err != nil {
+		return data // 解析失败，返回原数据
+	}
+
+	// 转换为 Claude 流式格式
+	claudeStreamResponse := w.convertStreamResponse(&openaiStreamResponse)
+	if claudeStreamResponse == nil {
+		return "" // 跳过这个数据块
+	}
+
+	// 序列化为 JSON
+	claudeData, err := json.Marshal(claudeStreamResponse)
+	if err != nil {
+		return data // 序列化失败，返回原数据
+	}
+
+	return "data: " + string(claudeData)
+}
+
+// convertStreamResponse 转换单个流式响应
+func (w *ClaudeStreamWrapper) convertStreamResponse(response *types.ChatCompletionStreamResponse) interface{} {
 	if len(response.Choices) == 0 {
 		return nil
 	}
@@ -404,7 +520,7 @@ func (h *OpenAIClaudeStreamHandler) convertOpenAIStreamToClaude(response *types.
 					"stop_reason": stopReason,
 				},
 				"usage": map[string]interface{}{
-					"input_tokens":  0, // OpenAI 流式响应通常不包含用量信息
+					"input_tokens":  0, // 流式响应通常不包含准确的用量信息
 					"output_tokens": 0,
 				},
 			}
