@@ -9,8 +9,8 @@ import (
 	"done-hub/common/utils"
 	"done-hub/providers/base"
 	"done-hub/providers/claude"
+  "done-hub/providers/gemini"
 	commonadapter "done-hub/providers/common"
-	"done-hub/providers/gemini"
 	"done-hub/providers/openai"
 	"done-hub/providers/vertexai"
 	"done-hub/relay/transformer"
@@ -95,7 +95,7 @@ func (r *relayClaudeOnly) send() (err *types.OpenAIErrorWithStatusCode, done boo
 		return r.sendVertexAIGeminiWithClaudeFormat()
 	}
 
-	// 检查是否为 Gemini 渠道，如果是则使用 Gemini->Claude 转换逻辑
+  // 检查是否为 Gemini 渠道，如果是则使用 Gemini->Claude 转换逻辑
 	if channelType == config.ChannelTypeGemini {
 		return r.sendGeminiWithClaudeFormat()
 	}
@@ -1425,11 +1425,10 @@ func (r *relayClaudeOnly) sendVertexAIGeminiWithClaudeFormat() (err *types.OpenA
 	transformManager := transformer.CreateClaudeToVertexGeminiManager()
 
 	// 1. 使用转换管理器处理请求转换（暂时不使用，保持兼容性）
-	// 注释掉：请求转换未实际使用，只是做错误检查但丢弃返回值
-	// _, transformErr := transformManager.ProcessRequest(r.claudeRequest)
-	// if transformErr != nil {
-	// 	return common.ErrorWrapper(transformErr, "request_transform_failed", http.StatusInternalServerError), true
-	// }
+	_, transformErr := transformManager.ProcessRequest(r.claudeRequest)
+	if transformErr != nil {
+		return common.ErrorWrapper(transformErr, "request_transform_failed", http.StatusInternalServerError), true
+	}
 
 	// 内容审查
 	if config.EnableSafe {
