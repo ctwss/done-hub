@@ -1,7 +1,6 @@
 package relay
 
 import (
-	"bufio"
 	"done-hub/common"
 	"done-hub/common/config"
 	"done-hub/common/logger"
@@ -9,11 +8,7 @@ import (
 	"done-hub/common/utils"
 	"done-hub/providers/base"
 	"done-hub/providers/claude"
-  "done-hub/providers/gemini"
 	commonadapter "done-hub/providers/common"
-	"done-hub/providers/openai"
-	"done-hub/providers/vertexai"
-	"done-hub/relay/transformer"
 	"done-hub/safty"
 	"done-hub/types"
 	"encoding/json"
@@ -27,9 +22,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// AllowChannelType 空数组表示支持所有渠道类型
+// AllowChannelType nil表示支持所有渠道类型
 // 通过接口检测来确定是否支持 Claude 协议
-var AllowChannelType = []int{}
+var AllowChannelType []int = nil
 
 type relayClaudeOnly struct {
 	relayBase
@@ -37,7 +32,10 @@ type relayClaudeOnly struct {
 }
 
 func NewRelayClaudeOnly(c *gin.Context) *relayClaudeOnly {
-	c.Set("allow_channel_type", AllowChannelType)
+	// 只有当AllowChannelType不为nil时才设置渠道类型过滤
+	if AllowChannelType != nil {
+		c.Set("allow_channel_type", AllowChannelType)
+	}
 	relay := &relayClaudeOnly{
 		relayBase: relayBase{
 			allowHeartbeat: true,
@@ -80,95 +78,27 @@ func (r *relayClaudeOnly) getPromptTokens() (int, error) {
 }
 
 func (r *relayClaudeOnly) send() (err *types.OpenAIErrorWithStatusCode, done bool) {
-
-	// 检查是否为自定义渠道，如果是则使用Claude->OpenAI->Claude的转换逻辑
-	channelType := r.provider.GetChannel().Type
-
-	if channelType == config.ChannelTypeCustom {
-
-		return r.sendCustomChannelWithClaudeFormat()
-	}
-
-	// 检查是否为 VertexAI 渠道且模型包含 gemini，如果是则使用 Gemini->Claude 转换逻辑
-	if channelType == config.ChannelTypeVertexAI &&
-		(strings.Contains(strings.ToLower(r.claudeRequest.Model), "gemini") || strings.Contains(strings.ToLower(r.claudeRequest.Model), "claude-3-5-haiku-20241022")) {
-		return r.sendVertexAIGeminiWithClaudeFormat()
-	}
-
-  // 检查是否为 Gemini 渠道，如果是则使用 Gemini->Claude 转换逻辑
-	if channelType == config.ChannelTypeGemini {
-		return r.sendGeminiWithClaudeFormat()
-	}
-
 	// 首先检查是否直接实现了 Claude 接口
 	chatProvider, ok := r.provider.(claude.ClaudeChatInterface)
-	if !ok {
-		// 如果没有直接实现 Claude 接口，检查是否实现了 ChatInterface
-		if baseChatProvider, ok := r.provider.(base.ChatInterface); ok {
-			// 使用通用适配器
-			adapter := commonadapter.NewClaudeAdapter(baseChatProvider)
-			chatProvider = adapter
-			logger.SysLog(fmt.Sprintf("[Claude Relay] 使用通用适配器为 Provider 类型 %T 提供 Claude 支持", r.provider))
-		} else {
-			logger.SysError(fmt.Sprintf("[Claude Relay] Provider 不支持 Claude 接口或 Chat 接口，Provider 类型: %T", r.provider))
-			err = common.StringErrorWrapperLocal("channel not implemented", "channel_error", http.StatusServiceUnavailable)
-			done = true
-			return
-		}
+	if ok {
+		// 直接使用Claude接口，适用于所有实现了Claude接口的Provider（包括Gemini、VertexAI、自定义渠道等）
+		logger.SysLog(fmt.Sprintf("[Claude Relay] 使用原生 Claude 接口，Provider 类型: %T", r.provider))
+		return r.sendWithClaudeInterface(chatProvider)
 	}
 
-	r.claudeRequest.Model = r.modelName
-	// 内容审查
-	if config.EnableSafe {
-		for _, message := range r.claudeRequest.Messages {
-			if message.Content != nil {
-				CheckResult, _ := safty.CheckContent(message.Content)
-				if !CheckResult.IsSafe {
-					err = common.StringErrorWrapperLocal(CheckResult.Reason, CheckResult.Code, http.StatusBadRequest)
-					done = true
-					return
-				}
-			}
-		}
+	// 如果没有直接实现 Claude 接口，检查是否实现了 ChatInterface，使用通用适配器
+	if baseChatProvider, ok := r.provider.(base.ChatInterface); ok {
+		// 使用通用适配器，适用于所有实现了ChatInterface但未实现Claude接口的Provider
+		adapter := commonadapter.NewClaudeAdapter(baseChatProvider)
+		chatProvider = adapter
+		logger.SysLog(fmt.Sprintf("[Claude Relay] 使用通用适配器为 Provider 类型 %T 提供 Claude 支持", r.provider))
+		return r.sendWithClaudeInterface(chatProvider)
 	}
 
-	if r.claudeRequest.Stream {
-		var response requester.StreamReaderInterface[string]
-		response, err = chatProvider.CreateClaudeChatStream(r.claudeRequest)
-		if err != nil {
-			return
-		}
-
-		if r.heartbeat != nil {
-			r.heartbeat.Stop()
-		}
-
-		doneStr := func() string {
-			return ""
-		}
-		firstResponseTime := responseGeneralStreamClient(r.c, response, doneStr)
-		r.SetFirstResponseTime(firstResponseTime)
-	} else {
-		var response *claude.ClaudeResponse
-		response, err = chatProvider.CreateClaudeChat(r.claudeRequest)
-		if err != nil {
-			return
-		}
-
-		if r.heartbeat != nil {
-			r.heartbeat.Stop()
-		}
-
-		openErr := responseJsonClient(r.c, response)
-
-		if openErr != nil {
-			err = openErr
-		}
-	}
-
-	if err != nil {
-		done = true
-	}
+	// 如果既没有实现Claude接口也没有实现ChatInterface，则报错
+	logger.SysError(fmt.Sprintf("[Claude Relay] Provider 不支持 Claude 接口或 Chat 接口，Provider 类型: %T", r.provider))
+	err = common.StringErrorWrapperLocal("channel not implemented", "channel_error", http.StatusServiceUnavailable)
+	done = true
 	return
 }
 
@@ -238,87 +168,7 @@ func CountTokenMessages(request *claude.ClaudeRequest, preCostType int) (int, er
 	return tokenNum, nil
 }
 
-// sendCustomChannelWithClaudeFormat 处理自定义渠道的Claude格式请求
-// 仅在 /claude/v1/messages 路由时调用，实现 Claude格式 -> OpenAI格式 -> 上游接口 -> OpenAI响应 -> Claude格式 的转换
-func (r *relayClaudeOnly) sendCustomChannelWithClaudeFormat() (err *types.OpenAIErrorWithStatusCode, done bool) {
 
-	// 将Claude请求转换为OpenAI格式
-	openaiRequest, err := r.convertClaudeToOpenAI()
-	if err != nil {
-
-		return err, true
-	}
-
-	// 内容审查
-	if config.EnableSafe {
-		for _, message := range r.claudeRequest.Messages {
-			if message.Content != nil {
-				CheckResult, _ := safty.CheckContent(message.Content)
-				if !CheckResult.IsSafe {
-					err = common.StringErrorWrapperLocal(CheckResult.Reason, CheckResult.Code, http.StatusBadRequest)
-					done = true
-					return
-				}
-			}
-		}
-	}
-
-	openaiRequest.Model = r.modelName
-
-	// 获取OpenAI provider来处理请求
-	openaiProvider, ok := r.provider.(*openai.OpenAIProvider)
-	if !ok {
-		err = common.StringErrorWrapperLocal("custom channel provider error", "channel_error", http.StatusServiceUnavailable)
-		done = true
-		return
-	}
-
-	if r.claudeRequest.Stream {
-		// 处理流式响应
-
-		var stream requester.StreamReaderInterface[string]
-		stream, err = openaiProvider.CreateChatCompletionStream(openaiRequest)
-		if err != nil {
-
-			return err, true
-		}
-
-		if r.heartbeat != nil {
-			r.heartbeat.Stop()
-		}
-
-		// 转换OpenAI流式响应为Claude格式
-		firstResponseTime := r.convertOpenAIStreamToClaude(stream)
-		r.SetFirstResponseTime(time.Unix(firstResponseTime, 0))
-	} else {
-		// 处理非流式响应
-
-		var openaiResponse *types.ChatCompletionResponse
-		openaiResponse, err = openaiProvider.CreateChatCompletion(openaiRequest)
-		if err != nil {
-
-			return err, true
-		}
-
-		if r.heartbeat != nil {
-			r.heartbeat.Stop()
-		}
-
-		// 转换OpenAI响应为Claude格式
-		claudeResponse := r.convertOpenAIResponseToClaude(openaiResponse)
-		openErr := responseJsonClient(r.c, claudeResponse)
-
-		if openErr != nil {
-			// 对于响应发送错误（如客户端断开连接），不应该触发重试
-			// 这种错误是客户端问题，不是服务端问题
-
-			// 不设置 err，避免触发重试机制
-		}
-
-	}
-
-	return err, false
-}
 
 // convertClaudeToOpenAI 将Claude请求转换为OpenAI格式
 func (r *relayClaudeOnly) convertClaudeToOpenAI() (*types.ChatCompletionRequest, *types.OpenAIErrorWithStatusCode) {
@@ -1417,220 +1267,6 @@ func (r *relayClaudeOnly) handleBackgroundTaskInSetRequest() error {
 	return errors.New("background_task_handled")
 }
 
-// sendVertexAIGeminiWithClaudeFormat handles VertexAI Gemini model Claude format requests
-// using new transformer architecture: Claude format -> unified format -> Gemini format -> VertexAI Gemini API -> Gemini response -> unified format -> Claude format
-func (r *relayClaudeOnly) sendVertexAIGeminiWithClaudeFormat() (err *types.OpenAIErrorWithStatusCode, done bool) {
-
-	// 创建转换管理器
-	transformManager := transformer.CreateClaudeToVertexGeminiManager()
-
-	// 1. 使用转换管理器处理请求转换（暂时不使用，保持兼容性）
-	_, transformErr := transformManager.ProcessRequest(r.claudeRequest)
-	if transformErr != nil {
-		return common.ErrorWrapper(transformErr, "request_transform_failed", http.StatusInternalServerError), true
-	}
-
-	// 内容审查
-	if config.EnableSafe {
-		for _, message := range r.claudeRequest.Messages {
-			if message.Content != nil {
-				CheckResult, _ := safty.CheckContent(message.Content)
-				if !CheckResult.IsSafe {
-					err = common.StringErrorWrapperLocal(CheckResult.Reason, CheckResult.Code, http.StatusBadRequest)
-					done = true
-					return
-				}
-			}
-		}
-	}
-
-	// 2. 直接调用 VertexAI API（暂时使用现有的 provider，后续可以优化为直接 HTTP 调用）
-	// 为了保持兼容性，我们先转换为 OpenAI 格式，然后使用现有的 provider
-	openaiRequest, convertErr := r.convertClaudeToOpenAI()
-	if convertErr != nil {
-		return convertErr, true
-	}
-
-	openaiRequest.Model = r.modelName
-
-	// 获取 VertexAI provider
-	vertexaiProvider, ok := r.provider.(*vertexai.VertexAIProvider)
-	if !ok {
-		err = common.StringErrorWrapperLocal("provider is not VertexAI provider", "channel_error", http.StatusServiceUnavailable)
-		done = true
-		return
-	}
-
-	if r.claudeRequest.Stream {
-		// 处理流式响应
-		var stream requester.StreamReaderInterface[string]
-		stream, err = vertexaiProvider.CreateChatCompletionStream(openaiRequest)
-		if err != nil {
-			return err, true
-		}
-
-		if r.heartbeat != nil {
-			r.heartbeat.Stop()
-		}
-
-		// use new transformer to handle stream response
-		firstResponseTime := r.convertOpenAIStreamToClaudeWithTransformer(stream, transformManager)
-		r.SetFirstResponseTime(time.Unix(firstResponseTime, 0))
-	} else {
-		// 处理非流式响应
-		var openaiResponse *types.ChatCompletionResponse
-		openaiResponse, err = vertexaiProvider.CreateChatCompletion(openaiRequest)
-		if err != nil {
-			return err, true
-		}
-
-		if r.heartbeat != nil {
-			r.heartbeat.Stop()
-		}
-
-		// use new transformer to handle non-stream response
-		claudeResponse := r.convertOpenAIResponseToClaudeWithTransformer(openaiResponse, transformManager)
-		openErr := responseJsonClient(r.c, claudeResponse)
-
-		if openErr != nil {
-			logger.SysLog(fmt.Sprintf("响应发送错误: %v", openErr))
-		}
-	}
-
-	return err, false
-}
-
-// convertOpenAIStreamToClaudeWithTransformer uses transformer to handle stream response
-func (r *relayClaudeOnly) convertOpenAIStreamToClaudeWithTransformer(stream requester.StreamReaderInterface[string], transformManager *transformer.TransformManager) int64 {
-
-	// 设置响应头
-	r.c.Header("Content-Type", "text/event-stream")
-	r.c.Header("Cache-Control", "no-cache")
-	r.c.Header("Connection", "keep-alive")
-	r.c.Header("Access-Control-Allow-Origin", "*")
-	r.c.Header("Access-Control-Allow-Headers", "Content-Type")
-
-	flusher, ok := r.c.Writer.(http.Flusher)
-	if !ok {
-		logger.SysLog("ResponseWriter 不支持 Flusher")
-		return time.Now().Unix()
-	}
-
-	// 创建一个模拟的 HTTP 响应来包装流数据
-	pr, pw := io.Pipe()
-
-	// 在 goroutine 中将流数据写入管道
-	go func() {
-		defer pw.Close()
-
-		dataChan, errChan := stream.Recv()
-
-		for {
-			select {
-			case rawLine, ok := <-dataChan:
-				if !ok {
-					// 数据通道已关闭
-					logger.SysLog("流数据通道已关闭")
-					return
-				}
-				// 写入原始的 OpenAI 流数据
-				fmt.Fprintf(pw, "data: %s\n\n", rawLine)
-
-			case err, ok := <-errChan:
-				if !ok {
-					// 错误通道已关闭
-					logger.SysLog("流错误通道已关闭")
-					return
-				}
-				if err != nil {
-					if err == io.EOF {
-						return
-					}
-					logger.SysLog(fmt.Sprintf("流接收错误: %v", err))
-					return
-				}
-			}
-		}
-	}()
-
-	// 创建模拟的 HTTP 响应
-	mockResponse := &http.Response{
-		StatusCode: 200,
-		Header:     make(http.Header),
-		Body:       pr,
-	}
-	mockResponse.Header.Set("Content-Type", "text/event-stream")
-
-	// use transform manager to handle stream response
-	claudeStream, err := transformManager.ProcessStreamResponse(mockResponse)
-	if err != nil {
-		return time.Now().Unix()
-	}
-
-	// 将转换后的 Claude 流式响应直接写入客户端
-	defer claudeStream.Body.Close()
-
-	scanner := bufio.NewScanner(claudeStream.Body)
-	firstResponseTime := time.Now().Unix()
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		// forward Claude format SSE events directly
-		if _, err := fmt.Fprintf(r.c.Writer, "%s\n", line); err != nil {
-			logger.SysError("Failed to write stream line: " + err.Error())
-			break
-		}
-		flusher.Flush()
-	}
-
-	if err := scanner.Err(); err != nil {
-		logger.SysError("Scanner error: " + err.Error())
-	}
-
-	return firstResponseTime
-}
-
-// convertOpenAIResponseToClaudeWithTransformer uses transformer to handle non-stream response
-func (r *relayClaudeOnly) convertOpenAIResponseToClaudeWithTransformer(openaiResponse *types.ChatCompletionResponse, transformManager *transformer.TransformManager) *claude.ClaudeResponse {
-
-	// 创建一个模拟的 HTTP 响应
-	responseBytes, _ := json.Marshal(openaiResponse)
-	mockResponse := &http.Response{
-		StatusCode: 200,
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(string(responseBytes))),
-	}
-
-	// use transform manager to handle response
-	claudeResponseInterface, err := transformManager.ProcessResponse(mockResponse)
-	if err != nil {
-		// return error response
-		return &claude.ClaudeResponse{
-			Id:         "error",
-			Type:       "message",
-			Role:       "assistant",
-			Content:    []claude.ResContent{{Type: "text", Text: "Response conversion error"}},
-			Model:      r.modelName,
-			StopReason: "error",
-		}
-	}
-
-	claudeResponse, ok := claudeResponseInterface.(*claude.ClaudeResponse)
-	if !ok {
-		return &claude.ClaudeResponse{
-			Id:         "error",
-			Type:       "message",
-			Role:       "assistant",
-			Content:    []claude.ResContent{{Type: "text", Text: "Response format conversion error"}},
-			Model:      r.modelName,
-			StopReason: "error",
-		}
-	}
-
-	return claudeResponse
-}
-
 // writeStreamResponse 直接写入流式响应
 func (r *relayClaudeOnly) writeStreamResponse(response *http.Response) {
 	// 设置响应头
@@ -1647,15 +1283,11 @@ func (r *relayClaudeOnly) writeStreamResponse(response *http.Response) {
 	}
 }
 
-// sendGeminiWithClaudeFormat handles Gemini channel Claude format requests
-// using transformer architecture: Claude format -> OpenAI format -> Gemini API -> OpenAI response -> Claude format
-func (r *relayClaudeOnly) sendGeminiWithClaudeFormat() (err *types.OpenAIErrorWithStatusCode, done bool) {
 
-	// 将Claude请求转换为OpenAI格式
-	openaiRequest, err := r.convertClaudeToOpenAI()
-	if err != nil {
-		return err, true
-	}
+// sendWithClaudeInterface 使用Claude接口处理请求
+// 适用于所有实现了claude.ClaudeChatInterface的Provider（如Gemini、VertexAI等）
+func (r *relayClaudeOnly) sendWithClaudeInterface(chatProvider claude.ClaudeChatInterface) (err *types.OpenAIErrorWithStatusCode, done bool) {
+	r.claudeRequest.Model = r.modelName
 
 	// 内容审查
 	if config.EnableSafe {
@@ -1671,56 +1303,44 @@ func (r *relayClaudeOnly) sendGeminiWithClaudeFormat() (err *types.OpenAIErrorWi
 		}
 	}
 
-	openaiRequest.Model = r.modelName
-
-	// 获取 Gemini provider
-	geminiProvider, ok := r.provider.(*gemini.GeminiProvider)
-	if !ok {
-		err = common.StringErrorWrapperLocal("provider is not Gemini provider", "channel_error", http.StatusServiceUnavailable)
-		done = true
-		return
-	}
-
 	if r.claudeRequest.Stream {
-		// 处理流式响应
-		var stream requester.StreamReaderInterface[string]
-		stream, err = geminiProvider.CreateChatCompletionStream(openaiRequest)
+		var response requester.StreamReaderInterface[string]
+		response, err = chatProvider.CreateClaudeChatStream(r.claudeRequest)
 		if err != nil {
-			return err, true
+			return
 		}
 
 		if r.heartbeat != nil {
 			r.heartbeat.Stop()
 		}
 
-		// 转换OpenAI流式响应为Claude格式
-		firstResponseTime := r.convertOpenAIStreamToClaude(stream)
-		r.SetFirstResponseTime(time.Unix(firstResponseTime, 0))
+		doneStr := func() string {
+			return ""
+		}
+		firstResponseTime := responseGeneralStreamClient(r.c, response, doneStr)
+		r.SetFirstResponseTime(firstResponseTime)
 	} else {
-		// 处理非流式响应
-		var openaiResponse *types.ChatCompletionResponse
-		openaiResponse, err = geminiProvider.CreateChatCompletion(openaiRequest)
+		var response *claude.ClaudeResponse
+		response, err = chatProvider.CreateClaudeChat(r.claudeRequest)
 		if err != nil {
-			return err, true
+			return
 		}
 
 		if r.heartbeat != nil {
 			r.heartbeat.Stop()
 		}
 
-		// 转换OpenAI响应为Claude格式
-		claudeResponse := r.convertOpenAIResponseToClaude(openaiResponse)
-		openErr := responseJsonClient(r.c, claudeResponse)
+		openErr := responseJsonClient(r.c, response)
 
 		if openErr != nil {
-			// 对于响应发送错误（如客户端断开连接），不应该触发重试
-			// 这种错误是客户端问题，不是服务端问题
-
-			// 不设置 err，避免触发重试机制
+			err = openErr
 		}
 	}
 
-	return err, false
+	if err != nil {
+		done = true
+	}
+	return
 }
 
 // 注意：convertVertexAIStreamToClaude 方法已被移除

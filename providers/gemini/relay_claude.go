@@ -4,6 +4,7 @@ import (
 	"done-hub/common"
 	"done-hub/common/requester"
 	"done-hub/providers/claude"
+	commonadapter "done-hub/providers/common"
 	"done-hub/types"
 	"encoding/json"
 	"fmt"
@@ -92,62 +93,66 @@ func (p *GeminiProvider) CreateClaudeChatStream(request *claude.ClaudeRequest) (
 
 // createClaudeChatWithOpenAI 使用 OpenAI API 处理 Claude 请求
 func (p *GeminiProvider) createClaudeChatWithOpenAI(request *claude.ClaudeRequest) (*claude.ClaudeResponse, *types.OpenAIErrorWithStatusCode) {
-	// 将 Claude 请求转换为 OpenAI 格式（这里不需要使用 claude.ConvertFromChatOpenai）
+	// 使用统一的转换器
+	converter := commonadapter.NewClaudeConverter()
+
+	// 将 Claude 请求转换为 OpenAI 格式
+	openaiRequest, errWithCode := converter.ConvertClaudeToOpenAI(request)
+	if errWithCode != nil {
+		return nil, errWithCode
+	}
 
 	// 使用 OpenAI provider 处理
-	openaiResponse, errWithCode := p.OpenAIProvider.CreateChatCompletion(&types.ChatCompletionRequest{
-		Model:       request.Model,
-		Messages:    convertClaudeMessagesToOpenAI(request.Messages),
-		MaxTokens:   request.MaxTokens,
-		Temperature: request.Temperature,
-		TopP:        request.TopP,
-		Stream:      false,
-	})
+	openaiResponse, errWithCode := p.OpenAIProvider.CreateChatCompletion(openaiRequest)
 	if errWithCode != nil {
 		return nil, errWithCode
 	}
 
 	// 将 OpenAI 响应转换为 Claude 格式
-	return convertOpenAIToClaude(openaiResponse, request), nil
+	claudeResponse := converter.ConvertOpenAIToClaude(openaiResponse)
+
+	// 设置用量信息
+	usage := p.GetUsage()
+	if openaiResponse.Usage != nil {
+		*usage = types.Usage{
+			PromptTokens:     openaiResponse.Usage.PromptTokens,
+			CompletionTokens: openaiResponse.Usage.CompletionTokens,
+			TotalTokens:      openaiResponse.Usage.TotalTokens,
+		}
+		claude.ClaudeUsageToOpenaiUsage(&claudeResponse.Usage, usage)
+	}
+
+	return claudeResponse, nil
 }
 
 // createClaudeChatStreamWithOpenAI 使用 OpenAI API 处理 Claude 流式请求
 func (p *GeminiProvider) createClaudeChatStreamWithOpenAI(request *claude.ClaudeRequest) (requester.StreamReaderInterface[string], *types.OpenAIErrorWithStatusCode) {
+	// 使用统一的转换器
+	converter := commonadapter.NewClaudeConverter()
+
+	// 将 Claude 请求转换为 OpenAI 格式
+	openaiRequest, errWithCode := converter.ConvertClaudeToOpenAI(request)
+	if errWithCode != nil {
+		return nil, errWithCode
+	}
+
+	// 设置流式请求
+	openaiRequest.Stream = true
+
 	// 使用 OpenAI provider 处理流式请求
-	return p.OpenAIProvider.CreateChatCompletionStream(&types.ChatCompletionRequest{
-		Model:       request.Model,
-		Messages:    convertClaudeMessagesToOpenAI(request.Messages),
-		MaxTokens:   request.MaxTokens,
-		Temperature: request.Temperature,
-		TopP:        request.TopP,
-		Stream:      true,
-	})
+	return p.OpenAIProvider.CreateChatCompletionStream(openaiRequest)
 }
 
 // convertClaudeToGemini 将 Claude 请求转换为 Gemini 格式
 func (p *GeminiProvider) convertClaudeToGemini(request *claude.ClaudeRequest) (*GeminiChatRequest, *types.OpenAIErrorWithStatusCode) {
-	// 先转换为 OpenAI 格式，再转换为 Gemini 格式
-	openaiRequest := &types.ChatCompletionRequest{
-		Model:       request.Model,
-		Messages:    convertClaudeMessagesToOpenAI(request.Messages),
-		MaxTokens:   request.MaxTokens,
-		Temperature: request.Temperature,
-		TopP:        request.TopP,
-		Stream:      request.Stream,
+	// 使用统一的转换器先转换为 OpenAI 格式
+	converter := commonadapter.NewClaudeConverter()
+	openaiRequest, errWithCode := converter.ConvertClaudeToOpenAI(request)
+	if errWithCode != nil {
+		return nil, errWithCode
 	}
 
-	// 处理系统消息
-	if request.System != nil {
-		if systemStr, ok := request.System.(string); ok && systemStr != "" {
-			systemMsg := types.ChatCompletionMessage{
-				Role:    types.ChatMessageRoleSystem,
-				Content: systemStr,
-			}
-			openaiRequest.Messages = append([]types.ChatCompletionMessage{systemMsg}, openaiRequest.Messages...)
-		}
-	}
-
-	// 使用现有的转换函数
+	// 再转换为 Gemini 格式
 	return ConvertFromChatOpenai(openaiRequest)
 }
 
@@ -208,117 +213,8 @@ func (p *GeminiProvider) convertGeminiToClaude(response *GeminiChatResponse, req
 	return claudeResponse, nil
 }
 
-// convertClaudeMessagesToOpenAI 将 Claude 消息转换为 OpenAI 格式
-func convertClaudeMessagesToOpenAI(messages []claude.Message) []types.ChatCompletionMessage {
-	openaiMessages := make([]types.ChatCompletionMessage, 0, len(messages))
 
-	for _, msg := range messages {
-		openaiMsg := types.ChatCompletionMessage{
-			Role: msg.Role,
-		}
 
-		// 处理内容
-		if msg.Content != nil {
-			switch content := msg.Content.(type) {
-			case string:
-				openaiMsg.Content = content
-			case []interface{}:
-				// 处理多模态内容
-				var textParts []string
-				for _, part := range content {
-					if partMap, ok := part.(map[string]interface{}); ok {
-						if partType, exists := partMap["type"]; exists && partType == "text" {
-							if text, exists := partMap["text"]; exists {
-								if textStr, ok := text.(string); ok {
-									textParts = append(textParts, textStr)
-								}
-							}
-						}
-					}
-				}
-				openaiMsg.Content = strings.Join(textParts, "\n")
-			default:
-				// 尝试转换为字符串
-				if contentBytes, err := json.Marshal(content); err == nil {
-					openaiMsg.Content = string(contentBytes)
-				}
-			}
-		}
-
-		openaiMessages = append(openaiMessages, openaiMsg)
-	}
-
-	return openaiMessages
-}
-
-// convertOpenAIToClaude 将 OpenAI 响应转换为 Claude 格式
-func convertOpenAIToClaude(response *types.ChatCompletionResponse, request *claude.ClaudeRequest) *claude.ClaudeResponse {
-	content := make([]claude.ResContent, 0)
-
-	if len(response.Choices) > 0 {
-		choice := response.Choices[0]
-		if choice.Message.Content != nil {
-			if contentStr, ok := choice.Message.Content.(string); ok && contentStr != "" {
-				content = append(content, claude.ResContent{
-					Type: "text",
-					Text: contentStr,
-				})
-			}
-		}
-
-		// 处理工具调用
-		if len(choice.Message.ToolCalls) > 0 {
-			for _, toolCall := range choice.Message.ToolCalls {
-				var input interface{}
-				if toolCall.Function.Arguments != "" {
-					json.Unmarshal([]byte(toolCall.Function.Arguments), &input)
-				} else {
-					input = map[string]interface{}{}
-				}
-
-				content = append(content, claude.ResContent{
-					Type:  "tool_use",
-					Id:    toolCall.Id,
-					Name:  toolCall.Function.Name,
-					Input: input,
-				})
-			}
-		}
-	}
-
-	// 转换停止原因
-	stopReason := "end_turn"
-	if len(response.Choices) > 0 {
-		switch response.Choices[0].FinishReason {
-		case "stop":
-			stopReason = "end_turn"
-		case "length":
-			stopReason = "max_tokens"
-		case "tool_calls":
-			stopReason = "tool_use"
-		case "content_filter":
-			stopReason = "stop_sequence"
-		}
-	}
-
-	claudeResponse := &claude.ClaudeResponse{
-		Id:         response.ID,
-		Type:       "message",
-		Role:       "assistant",
-		Content:    content,
-		Model:      response.Model,
-		StopReason: stopReason,
-	}
-
-	if response.Usage != nil {
-		claudeResponse.Usage = claude.Usage{
-			InputTokens:  response.Usage.PromptTokens,
-			OutputTokens: response.Usage.CompletionTokens,
-		}
-	}
-
-	return claudeResponse
-}
 
 // GeminiClaudeStreamHandler 处理 Gemini 到 Claude 的流式响应转换
 type GeminiClaudeStreamHandler struct {
