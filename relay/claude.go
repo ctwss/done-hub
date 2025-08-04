@@ -27,9 +27,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// AllowChannelType 支持的渠道类型
-// 包含明确支持的渠道类型，同时通过接口检测来确定是否支持 Claude 协议
-var AllowChannelType = []int{config.ChannelTypeAnthropic, config.ChannelTypeVertexAI, config.ChannelTypeBedrock, config.ChannelTypeCustom, config.ChannelTypeGemini}
+// AllowChannelType 空数组表示支持所有渠道类型
+// 通过接口检测来确定是否支持 Claude 协议
+var AllowChannelType = []int{}
 
 type relayClaudeOnly struct {
 	relayBase
