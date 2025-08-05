@@ -9,7 +9,8 @@ RUN yarn --frozen-lockfile
 
 COPY ./web .
 COPY ./VERSION .
-RUN DISABLE_ESLINT_PLUGIN='true' VITE_APP_VERSION=$(cat VERSION) npm run build
+RUN rm -rf build dist .vite && \
+    DISABLE_ESLINT_PLUGIN='true' VITE_APP_VERSION=$(cat VERSION) npm run build
 
 FROM golang:1.24.2 AS builder2
 

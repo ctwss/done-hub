@@ -8,6 +8,16 @@ import jsconfigPaths from 'vite-jsconfig-paths';
 
 export default defineConfig({
   plugins: [react(), jsconfigPaths()],
+  base: './',
+  build: {
+    outDir: 'build',
+    assetsDir: 'assets',
+    rollupOptions: {
+      output: {
+        manualChunks: undefined
+      }
+    }
+  },
   // https://github.com/jpuri/react-draft-wysiwyg/issues/1317
   //   define: {
   //     global: 'window'

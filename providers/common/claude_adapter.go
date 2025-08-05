@@ -38,12 +38,20 @@ func (a *ClaudeAdapter) SetContext(c *gin.Context) {
 	a.ChatProvider.SetContext(c)
 }
 
+func (a *ClaudeAdapter) GetContext() *gin.Context {
+	return a.ChatProvider.GetContext()
+}
+
 func (a *ClaudeAdapter) SetOriginalModel(modelName string) {
 	a.ChatProvider.SetOriginalModel(modelName)
 }
 
 func (a *ClaudeAdapter) GetOriginalModel() string {
 	return a.ChatProvider.GetOriginalModel()
+}
+
+func (a *ClaudeAdapter) GetResponseModelName(requestModel string) string {
+	return a.ChatProvider.GetResponseModelName(requestModel)
 }
 
 func (a *ClaudeAdapter) GetChannel() *model.Channel {
