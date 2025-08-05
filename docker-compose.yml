@@ -11,7 +11,7 @@ services:
       - ./data:/data
     environment:
       - SQL_DSN=${SQL_DSN} # 使用.env文件中的SQL_DSN变量
-      # - REDIS_CONN_STRING=redis://:jhkdjhkjdhsIUTYURTU_CQPQ82@10.0.0.83:6379 # redis (请将 your_password 替换为实际的 Redis 密码)
+      - REDIS_CONN_STRING=redis://:jhkdjhkjdhsIUTYURTU_CQPQ82@10.0.0.83:6379 # redis (请将 your_password 替换为实际的 Redis 密码)
       - SESSION_SECRET=random_string # 修改为随机字符串
       - USER_TOKEN_SECRET=random_string # 修改为随机字符串,32位以上
       - TZ=Asia/Shanghai

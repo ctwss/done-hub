@@ -8,30 +8,10 @@ import jsconfigPaths from 'vite-jsconfig-paths';
 
 export default defineConfig({
   plugins: [react(), jsconfigPaths()],
-  base: './',
-  build: {
-    outDir: 'build',
-    assetsDir: 'assets',
-    rollupOptions: {
-      output: {
-        manualChunks: undefined
-      }
-    }
-  },
   // https://github.com/jpuri/react-draft-wysiwyg/issues/1317
   //   define: {
   //     global: 'window'
   //   },
-  css: {
-    preprocessorOptions: {
-      scss: {
-        // 使用现代 Sass API 解决 Legacy JS API 警告
-        api: 'modern-compiler',
-        // 静默弃用警告
-        silenceDeprecations: ['legacy-js-api', 'import']
-      }
-    }
-  },
   resolve: {
     alias: [
       {
