@@ -24,14 +24,21 @@ func NewClaudeConverter() *ClaudeConverter {
 func (c *ClaudeConverter) ConvertClaudeToOpenAI(claudeRequest *claude.ClaudeRequest) (*types.ChatCompletionRequest, *types.OpenAIErrorWithStatusCode) {
 	// 输入验证
 	if claudeRequest == nil {
+		logger.SysError("[ClaudeConverter] claudeRequest is nil")
 		return nil, common.StringErrorWrapper("request cannot be nil", "invalid_request", http.StatusBadRequest)
 	}
 
+	// 详细记录输入请求
+	logger.SysLog(fmt.Sprintf("[ClaudeConverter] Input Claude request: Model=%s, Messages=%d, MaxTokens=%d, Stream=%t",
+		claudeRequest.Model, len(claudeRequest.Messages), claudeRequest.MaxTokens, claudeRequest.Stream))
+
 	if len(claudeRequest.Messages) == 0 {
+		logger.SysError("[ClaudeConverter] messages is empty")
 		return nil, common.StringErrorWrapper("messages cannot be empty", "invalid_request", http.StatusBadRequest)
 	}
 
 	if claudeRequest.MaxTokens <= 0 {
+		logger.SysError(fmt.Sprintf("[ClaudeConverter] invalid max_tokens: %d", claudeRequest.MaxTokens))
 		return nil, common.StringErrorWrapper("max_tokens must be positive", "invalid_request", http.StatusBadRequest)
 	}
 
@@ -268,12 +275,44 @@ func (c *ClaudeConverter) ConvertClaudeToOpenAI(claudeRequest *claude.ClaudeRequ
 		}
 	}
 
+	// 打印转换后的请求信息用于调试
+	logger.SysLog(fmt.Sprintf("[ClaudeConverter] Converted OpenAI request: Model=%s, Messages=%d, MaxTokens=%d, Stream=%t",
+		openaiRequest.Model, len(openaiRequest.Messages), openaiRequest.MaxTokens, openaiRequest.Stream))
+
+	// 详细记录消息内容
+	if len(openaiRequest.Messages) == 0 {
+		logger.SysError("[ClaudeConverter] WARNING: Converted request has no messages!")
+	} else {
+		for i, msg := range openaiRequest.Messages {
+			contentStr := fmt.Sprintf("%v", msg.Content)
+			if len(contentStr) > 100 {
+				contentStr = contentStr[:100] + "..."
+			}
+			logger.SysLog(fmt.Sprintf("[ClaudeConverter] Message[%d]: Role=%s, Content=%s", i, msg.Role, contentStr))
+		}
+	}
+
 	return openaiRequest, nil
 }
 
 // ConvertOpenAIToClaude 将OpenAI响应转换为Claude格式
 func (c *ClaudeConverter) ConvertOpenAIToClaude(openaiResponse *types.ChatCompletionResponse) *claude.ClaudeResponse {
-	if openaiResponse == nil || len(openaiResponse.Choices) == 0 {
+	if openaiResponse == nil {
+		logger.SysError("[ClaudeConverter] ConvertOpenAIToClaude: openaiResponse is nil")
+		return &claude.ClaudeResponse{
+			Id:      "msg_error",
+			Type:    "message",
+			Role:    "assistant",
+			Content: []claude.ResContent{},
+			Model:   "unknown",
+		}
+	}
+
+	logger.SysLog(fmt.Sprintf("[ClaudeConverter] Converting OpenAI response: ID=%s, Model=%s, Choices=%d",
+		openaiResponse.ID, openaiResponse.Model, len(openaiResponse.Choices)))
+
+	if len(openaiResponse.Choices) == 0 {
+		logger.SysError("[ClaudeConverter] ConvertOpenAIToClaude: no choices in response")
 		return &claude.ClaudeResponse{
 			Id:      "msg_" + openaiResponse.ID,
 			Type:    "message",
@@ -285,6 +324,19 @@ func (c *ClaudeConverter) ConvertOpenAIToClaude(openaiResponse *types.ChatComple
 
 	choice := openaiResponse.Choices[0]
 	content := make([]claude.ResContent, 0)
+
+	// 详细记录Choice内容
+	logger.SysLog(fmt.Sprintf("[ClaudeConverter] Choice details: FinishReason=%s, ContentType=%T, ToolCallsCount=%d",
+		choice.FinishReason, choice.Message.Content, len(choice.Message.ToolCalls)))
+
+	// 如果有内容，记录内容的前100个字符
+	if choice.Message.Content != nil {
+		contentStr := fmt.Sprintf("%v", choice.Message.Content)
+		if len(contentStr) > 100 {
+			contentStr = contentStr[:100] + "..."
+		}
+		logger.SysLog(fmt.Sprintf("[ClaudeConverter] Message content preview: %s", contentStr))
+	}
 
 	// 处理文本内容
 	// 检查是否达到 max_tokens 限制
@@ -333,7 +385,18 @@ func (c *ClaudeConverter) ConvertOpenAIToClaude(openaiResponse *types.ChatComple
 
 	// 处理工具调用
 	var toolCallTokens int
-	if len(choice.Message.ToolCalls) > 0 {
+	hasToolCalls := len(choice.Message.ToolCalls) > 0
+	hasTextContent := len(content) > 0
+
+	if hasToolCalls {
+		// 如果有工具调用但没有文本内容，添加默认说明文本
+		if !hasTextContent {
+			content = append(content, claude.ResContent{
+				Type: "text",
+				Text: "我来为您处理这个请求。",
+			})
+		}
+
 		for _, toolCall := range choice.Message.ToolCalls {
 			var input interface{}
 			if toolCall.Function.Arguments != "" {

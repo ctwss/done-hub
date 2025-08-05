@@ -3,12 +3,15 @@ package openai
 import (
 	"done-hub/common"
 	"done-hub/common/config"
+	"done-hub/common/logger"
 	"done-hub/common/requester"
 	"done-hub/providers/claude"
 	commonadapter "done-hub/providers/common"
 	"done-hub/types"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
 	"strings"
 )
 
@@ -26,8 +29,18 @@ func (p *OpenAIProvider) CreateClaudeChat(request *claude.ClaudeRequest) (*claud
 	// 使用 OpenAI provider 处理请求
 	openaiResponse, errWithCode := p.CreateChatCompletion(openaiRequest)
 	if errWithCode != nil {
+		logger.SysError(fmt.Sprintf("[OpenAI Claude] CreateChatCompletion failed: %v", errWithCode))
 		return nil, errWithCode
 	}
+
+	// 添加响应验证日志
+	if openaiResponse == nil {
+		logger.SysError("[OpenAI Claude] Received nil response from CreateChatCompletion")
+		return nil, common.StringErrorWrapper("received nil response", "internal_error", http.StatusInternalServerError)
+	}
+
+	logger.SysLog(fmt.Sprintf("[OpenAI Claude] Received response: ID=%s, Model=%s, Choices=%d",
+		openaiResponse.ID, openaiResponse.Model, len(openaiResponse.Choices)))
 
 	// 将 OpenAI 响应转换为 Claude 格式
 	claudeResponse := converter.ConvertOpenAIToClaude(openaiResponse)

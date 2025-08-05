@@ -27,6 +27,11 @@ type AliProvider struct {
 	UseOpenaiAPI bool
 }
 
+// GetUseOpenaiAPI 返回是否使用OpenAI兼容模式
+func (p *AliProvider) GetUseOpenaiAPI() bool {
+	return p.UseOpenaiAPI
+}
+
 // 创建 AliProvider
 // https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation
 func (f AliProviderFactory) Create(channel *model.Channel) base.ProviderInterface {

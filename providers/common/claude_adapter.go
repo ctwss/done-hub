@@ -1,12 +1,14 @@
 package common
 
 import (
+	"done-hub/common"
 	"done-hub/common/requester"
 	"done-hub/model"
 	"done-hub/providers/base"
 	"done-hub/providers/claude"
 	"done-hub/types"
 	"encoding/json"
+	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -82,6 +84,13 @@ func NewClaudeAdapter(chatProvider base.ChatInterface) *ClaudeAdapter {
 
 // CreateClaudeChat 实现 Claude 聊天接口
 func (a *ClaudeAdapter) CreateClaudeChat(request *claude.ClaudeRequest) (*claude.ClaudeResponse, *types.OpenAIErrorWithStatusCode) {
+	// 检查是否是阿里云Provider且使用原生模式
+	if aliProvider, ok := a.ChatProvider.(interface{ GetUseOpenaiAPI() bool }); ok {
+		if !aliProvider.GetUseOpenaiAPI() {
+			return nil, common.StringErrorWrapper("Ali provider in native mode does not support Claude interface through adapter. Please configure the channel to use OpenAI compatible mode.", "unsupported_operation", http.StatusNotImplemented)
+		}
+	}
+
 	// 将 Claude 请求转换为 OpenAI 格式
 	openaiRequest, errWithCode := a.converter.ConvertClaudeToOpenAI(request)
 	if errWithCode != nil {
@@ -108,6 +117,13 @@ func (a *ClaudeAdapter) CreateClaudeChat(request *claude.ClaudeRequest) (*claude
 
 // CreateClaudeChatStream 实现 Claude 流式聊天接口
 func (a *ClaudeAdapter) CreateClaudeChatStream(request *claude.ClaudeRequest) (requester.StreamReaderInterface[string], *types.OpenAIErrorWithStatusCode) {
+	// 检查是否是阿里云Provider且使用原生模式
+	if aliProvider, ok := a.ChatProvider.(interface{ GetUseOpenaiAPI() bool }); ok {
+		if !aliProvider.GetUseOpenaiAPI() {
+			return nil, common.StringErrorWrapper("Ali provider in native mode does not support Claude interface through adapter. Please configure the channel to use OpenAI compatible mode.", "unsupported_operation", http.StatusNotImplemented)
+		}
+	}
+
 	// 将 Claude 请求转换为 OpenAI 格式
 	openaiRequest, errWithCode := a.converter.ConvertClaudeToOpenAI(request)
 	if errWithCode != nil {
@@ -148,6 +164,11 @@ type ClaudeStreamWrapper struct {
 	converter      *ClaudeConverter
 	dataChan       chan string
 	errChan        chan error
+}
+
+// SetConverter 设置转换器
+func (w *ClaudeStreamWrapper) SetConverter(converter *ClaudeConverter) {
+	w.converter = converter
 }
 
 // Recv 接收并转换流式数据

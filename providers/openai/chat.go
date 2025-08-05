@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"done-hub/common"
 	"done-hub/common/config"
+	"done-hub/common/logger"
 	"done-hub/common/requester"
 	"done-hub/types"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -46,9 +48,16 @@ func (p *OpenAIProvider) CreateChatCompletion(request *types.ChatCompletionReque
 
 	response := &OpenAIProviderChatResponse{}
 	// 发送请求
-	_, errWithCode = p.Requester.SendRequest(req, response, false)
+	httpResp, errWithCode := p.Requester.SendRequest(req, response, false)
 	if errWithCode != nil {
+		logger.SysError(fmt.Sprintf("[OpenAI Provider] SendRequest failed: %v", errWithCode))
 		return nil, errWithCode
+	}
+
+	// 添加响应状态日志
+	if httpResp != nil {
+		logger.SysLog(fmt.Sprintf("[OpenAI Provider] HTTP Response: Status=%d, ContentType=%s",
+			httpResp.StatusCode, httpResp.Header.Get("Content-Type")))
 	}
 
 	// 检测是否错误
