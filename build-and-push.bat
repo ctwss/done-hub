@@ -68,19 +68,6 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 echo [SUCCESS] Image push completed
-echo.
-
-REM Trigger deployment update
-echo [STEP 5/5] Triggering deployment update...
-echo [EXEC] curl -H "Authorization: Bearer zksh6257" http://120.46.66.160:8383/v1/update
-curl -H "Authorization: Bearer zksh6257" http://120.46.66.160:8383/v1/update
-if %errorlevel% neq 0 (
-    echo [WARNING] Deployment update request failed, but image push was successful
-) else (
-    echo [SUCCESS] Deployment update triggered successfully
-)
-echo.
-
 REM Display image information
 echo ========================================
 echo Build and Push Completed!
